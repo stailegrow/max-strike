@@ -18,6 +18,13 @@ interface LogEntry {
   message: string
 }
 
+interface RoutingConfig {
+  blockAds: boolean
+  bypassLan: boolean
+  splitRouting: boolean
+  region: 'russia' | 'all'
+}
+
 function App() {
   const { 
     subscriptions, allServers, loading,
@@ -27,7 +34,7 @@ function App() {
   
   const { theme, setTheme, language, setLanguage } = useSettings()
   
-  const [currentPage, setCurrentPage] = useState<'home' | 'subscriptions' | 'settings' | 'logs' | 'about'>('home')
+  const [currentPage, setCurrentPage] = useState<'home' | 'subscriptions' | 'settings' | 'interface' | 'routing' | 'logs' | 'about'>('home')
   const [connectedServerId, setConnectedServerId] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
@@ -39,6 +46,14 @@ function App() {
   const [modal, setModal] = useState<'none' | 'terms' | 'privacy'>('none')
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [notification, setNotification] = useState<string | null>(null)
+  
+  // Routing state
+  const [routingConfig, setRoutingConfig] = useState<RoutingConfig>({
+    blockAds: false,
+    bypassLan: true,
+    splitRouting: true,
+    region: 'russia'
+  })
 
   const t = translations[language]
 
@@ -50,12 +65,34 @@ function App() {
     }
   }, [currentPage])
 
+  useEffect(() => {
+    loadRoutingConfig()
+  }, [])
+
   const loadLogs = async () => {
     try {
       const logData = await invoke<LogEntry[]>('get_logs')
       setLogs(logData)
     } catch (error) {
       console.error('Failed to load logs:', error)
+    }
+  }
+
+  const loadRoutingConfig = async () => {
+    try {
+      const config = await invoke<RoutingConfig>('get_routing_config')
+      setRoutingConfig(config)
+    } catch (error) {
+      console.error('Failed to load routing config:', error)
+    }
+  }
+
+  const saveRoutingConfig = async (config: RoutingConfig) => {
+    try {
+      await invoke('save_routing_config', { config })
+      setRoutingConfig(config)
+    } catch (error) {
+      console.error('Failed to save routing config:', error)
     }
   }
 
@@ -231,13 +268,20 @@ function App() {
 
       <main className="main">
         <header className="header">
-          <h1 className="page-title">
-            {currentPage === 'home' && t.home}
-            {currentPage === 'subscriptions' && t.subscriptions}
-            {currentPage === 'settings' && t.settings}
-            {currentPage === 'logs' && t.logs}
-            {currentPage === 'about' && t.about}
-          </h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {(currentPage === 'interface' || currentPage === 'routing') && (
+              <button className="btn-back" onClick={() => setCurrentPage('settings')}>←</button>
+            )}
+            <h1 className="page-title">
+              {currentPage === 'home' && t.home}
+              {currentPage === 'subscriptions' && t.subscriptions}
+              {currentPage === 'settings' && t.settings}
+              {currentPage === 'interface' && t.interface}
+              {currentPage === 'routing' && t.routing}
+              {currentPage === 'logs' && t.logs}
+              {currentPage === 'about' && t.about}
+            </h1>
+          </div>
           <div className={`status ${connectedServer ? 'connected' : ''}`}>
             <span className="status-dot"></span>
             <span>{connectedServer ? connectedServer.name : t.notConnected}</span>
@@ -390,6 +434,24 @@ function App() {
                 <h2 className="card-title">{t.settings}</h2>
               </div>
               <div className="settings-list">
+                <div className="setting-item" onClick={() => setCurrentPage('interface')} style={{ cursor: 'pointer' }}>
+                  <span className="setting-label">{t.interface}</span>
+                  <span>→</span>
+                </div>
+                <div className="setting-item" onClick={() => setCurrentPage('routing')} style={{ cursor: 'pointer' }}>
+                  <span className="setting-label">{t.routing}</span>
+                  <span>→</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'interface' && (
+            <div className="card">
+              <div className="card-header">
+                <h2 className="card-title">{t.interface}</h2>
+              </div>
+              <div className="settings-list">
                 <div className="setting-item">
                   <span className="setting-label">{t.language}</span>
                   <select className="select" value={language} onChange={(e) => setLanguage(e.target.value as 'ru' | 'en')}>
@@ -409,6 +471,74 @@ function App() {
                     <option value="cyan">Cyan</option>
                   </select>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'routing' && (
+            <div className="card">
+              <div className="card-header">
+                <h2 className="card-title">{t.routingRules}</h2>
+              </div>
+              <div className="settings-list">
+                <div className="setting-item toggle-item">
+                  <div>
+                    <div className="setting-label">{t.blockAds}</div>
+                    <div className="setting-desc">{t.blockAdsDesc}</div>
+                  </div>
+                  <label className="toggle-switch">
+                    <input 
+                      type="checkbox" 
+                      checked={routingConfig.blockAds}
+                      onChange={(e) => saveRoutingConfig({ ...routingConfig, blockAds: e.target.checked })}
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                </div>
+                
+                <div className="setting-item toggle-item">
+                  <div>
+                    <div className="setting-label">{t.bypassLan}</div>
+                    <div className="setting-desc">{t.bypassLanDesc}</div>
+                  </div>
+                  <label className="toggle-switch">
+                    <input 
+                      type="checkbox" 
+                      checked={routingConfig.bypassLan}
+                      onChange={(e) => saveRoutingConfig({ ...routingConfig, bypassLan: e.target.checked })}
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                </div>
+                
+                <div className="setting-item toggle-item">
+                  <div>
+                    <div className="setting-label">{t.splitRouting}</div>
+                    <div className="setting-desc">{t.splitRoutingDesc}</div>
+                  </div>
+                  <label className="toggle-switch">
+                    <input 
+                      type="checkbox" 
+                      checked={routingConfig.splitRouting}
+                      onChange={(e) => saveRoutingConfig({ ...routingConfig, splitRouting: e.target.checked })}
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                </div>
+                
+                {routingConfig.splitRouting && (
+                  <div className="setting-item">
+                    <span className="setting-label">{t.region}</span>
+                    <select 
+                      className="select" 
+                      value={routingConfig.region}
+                      onChange={(e) => saveRoutingConfig({ ...routingConfig, region: e.target.value as 'russia' | 'all' })}
+                    >
+                      <option value="russia">{t.regionRussia}</option>
+                      <option value="all">{t.regionAll}</option>
+                    </select>
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -27,6 +27,13 @@ type ServerConfig struct {
 	Type        string `json:"type"`
 }
 
+type RoutingConfig struct {
+	BlockAds     bool   `json:"block_ads"`
+	BypassLan    bool   `json:"bypass_lan"`
+	SplitRouting bool   `json:"split_routing"`
+	Region       string `json:"region"`
+}
+
 var xrayProcess *exec.Cmd
 
 func main() {
@@ -75,7 +82,23 @@ func connect(configPath string) {
 		config.Type = "tcp"
 	}
 
-	xrayConfig := createXrayConfig(config)
+	routing := RoutingConfig{
+		BlockAds:     false,
+		BypassLan:    true,
+		SplitRouting: true,
+		Region:       "russia",
+	}
+	
+	routingPath := os.Getenv("ROUTING_CONFIG")
+	if routingPath != "" {
+		if routingData, err := os.ReadFile(routingPath); err == nil {
+			json.Unmarshal(routingData, &routing)
+			fmt.Printf("Routing loaded: block_ads=%v, bypass_lan=%v, split_routing=%v, region=%s\n",
+				routing.BlockAds, routing.BypassLan, routing.SplitRouting, routing.Region)
+		}
+	}
+
+	xrayConfig := createXrayConfig(config, routing)
 
 	tmpDir := os.TempDir()
 	xrayConfigPath := filepath.Join(tmpDir, "max-strike-xray-config.json")
@@ -93,7 +116,7 @@ func connect(configPath string) {
 		fmt.Println("Xray binary not found")
 		os.Exit(1)
 	}
-	
+
 	fmt.Printf("Using xray: %s\n", xrayPath)
 
 	xrayProcess = exec.Command(xrayPath, "run", "-config", xrayConfigPath)
@@ -115,11 +138,31 @@ func connect(configPath string) {
 	disconnect()
 }
 
-func createXrayConfig(config ServerConfig) map[string]interface{} {
+func createXrayConfig(config ServerConfig, routing RoutingConfig) map[string]interface{} {
+	outbounds := []map[string]interface{}{
+		createOutbound(config),
+	}
+
+	outbounds = append(outbounds, map[string]interface{}{
+		"tag":      "direct",
+		"protocol": "freedom",
+		"settings": map[string]interface{}{},
+	})
+
+	outbounds = append(outbounds, map[string]interface{}{
+		"tag":      "block",
+		"protocol": "blackhole",
+		"settings": map[string]interface{}{},
+	})
+
+	dnsConfig := createDNSConfig(routing)
+	routingRules := createRoutingRules(routing)
+
 	xrayConfig := map[string]interface{}{
 		"log": map[string]interface{}{
 			"loglevel": "warning",
 		},
+		"dns": dnsConfig,
 		"inbounds": []map[string]interface{}{
 			{
 				"port":     10808,
@@ -148,12 +191,125 @@ func createXrayConfig(config ServerConfig) map[string]interface{} {
 				},
 			},
 		},
-		"outbounds": []map[string]interface{}{
-			createOutbound(config),
-		},
+		"outbounds": outbounds,
+		"routing":   routingRules,
 	}
 
 	return xrayConfig
+}
+
+func createDNSConfig(routing RoutingConfig) map[string]interface{} {
+	servers := []interface{}{}
+
+	if routing.BlockAds {
+		servers = append(servers, map[string]interface{}{
+			"address": "https://dns.adguard-dns.com/dns-query",
+			"domains": []string{"geosite:category-ads-all"},
+		})
+	}
+
+	if routing.SplitRouting && routing.Region == "russia" {
+		servers = append(servers, map[string]interface{}{
+			"address": "https://common.dot.dns.yandex.net/dns-query",
+			"domains": []string{"geosite:category-ru"},
+		})
+	}
+
+	servers = append(servers, "https://8.8.8.8/dns-query")
+
+	return map[string]interface{}{
+		"servers": servers,
+	}
+}
+
+func createRoutingRules(routing RoutingConfig) map[string]interface{} {
+	rules := []map[string]interface{}{}
+
+	if routing.BlockAds {
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"outboundTag": "block",
+			"domain":      []string{"geosite:category-ads-all"},
+		})
+	}
+
+	if routing.BypassLan {
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"outboundTag": "direct",
+			"ip": []string{
+				"10.0.0.0/8",
+				"172.16.0.0/12",
+				"192.168.0.0/16",
+				"127.0.0.0/8",
+				"169.254.0.0/16",
+			},
+		})
+	}
+
+	if routing.SplitRouting && routing.Region == "russia" {
+		// Используем geosite:category-ru для доменов
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"outboundTag": "direct",
+			"domain":      []string{"geosite:category-ru"},
+		})
+		
+		// Основные российские IP диапазоны (вместо geoip:ru)
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"outboundTag": "direct",
+			"ip": []string{
+				"5.0.0.0/8",
+				"31.0.0.0/8",
+				"37.0.0.0/8",
+				"46.0.0.0/8",
+				"62.0.0.0/8",
+				"77.0.0.0/8",
+				"78.0.0.0/8",
+				"79.0.0.0/8",
+				"80.0.0.0/8",
+				"81.0.0.0/8",
+				"82.0.0.0/8",
+				"83.0.0.0/8",
+				"84.0.0.0/8",
+				"85.0.0.0/8",
+				"86.0.0.0/8",
+				"87.0.0.0/8",
+				"88.0.0.0/8",
+				"89.0.0.0/8",
+				"90.0.0.0/8",
+				"91.0.0.0/8",
+				"92.0.0.0/8",
+				"93.0.0.0/8",
+				"94.0.0.0/8",
+				"95.0.0.0/8",
+				"109.0.0.0/8",
+				"128.0.0.0/8",
+				"176.0.0.0/8",
+				"178.0.0.0/8",
+				"185.0.0.0/8",
+				"188.0.0.0/8",
+				"193.0.0.0/8",
+				"194.0.0.0/8",
+				"195.0.0.0/8",
+				"212.0.0.0/8",
+				"213.0.0.0/8",
+				"217.0.0.0/8",
+			},
+		})
+	}
+
+	rules = append(rules, map[string]interface{}{
+		"type":        "field",
+		"outboundTag": "proxy",
+		"network":     "tcp,udp",
+	})
+
+	return map[string]interface{}{
+		"domainStrategy": "IPIfNonMatch",
+		"rules":          rules,
+	}
 }
 
 func createOutbound(config ServerConfig) map[string]interface{} {
@@ -208,14 +364,12 @@ func createStreamSettings(config ServerConfig) map[string]interface{} {
 }
 
 func findXray() string {
-	// Приоритет 1: переменная окружения от Rust
 	if envPath := os.Getenv("XRAY_PATH"); envPath != "" {
 		if _, err := os.Stat(envPath); err == nil {
 			return envPath
 		}
 	}
-	
-	// Приоритет 2: рядом с текущим бинарником
+
 	if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)
 		localXray := filepath.Join(exeDir, "xray")
@@ -223,13 +377,11 @@ func findXray() string {
 			return localXray
 		}
 	}
-	
-	// Приоритет 3: в PATH
+
 	if path, err := exec.LookPath("xray"); err == nil {
 		return path
 	}
 
-	// Приоритет 4: стандартные пути
 	paths := []string{
 		"/usr/local/bin/xray",
 		"/usr/bin/xray",

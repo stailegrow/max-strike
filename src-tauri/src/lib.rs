@@ -252,6 +252,22 @@ async fn connect_to_server(app: tauri::AppHandle, server: Server) -> Result<Stri
     
     add_log("DEBUG", "Config written to /tmp/max-strike-config.json");
     
+    // Читаем routing config
+    let routing = ROUTING_CONFIG.lock().unwrap().clone();
+    add_log("INFO", &format!("Routing config: block_ads={}, bypass_lan={}, split_routing={}, region={}", 
+        routing.block_ads, routing.bypass_lan, routing.split_routing, routing.region));
+    
+    // Сохраняем routing config в файл для Go core
+    let routing_json = serde_json::to_string(&routing).map_err(|e| {
+        add_log("ERROR", &format!("Failed to serialize routing config: {}", e));
+        format!("Failed to serialize routing: {}", e)
+    })?;
+    std::fs::write("/tmp/max-strike-routing.json", &routing_json).map_err(|e| {
+        add_log("ERROR", &format!("Failed to write routing config: {}", e));
+        format!("Failed to write routing: {}", e)
+    })?;
+    add_log("DEBUG", "Routing config written to /tmp/max-strike-routing.json");
+    
     // Умный поиск core бинарника
     let resource_dir = app.path().resource_dir().ok();
     
@@ -279,6 +295,7 @@ async fn connect_to_server(app: tauri::AppHandle, server: Server) -> Result<Stri
     
     let child = Command::new(&core_path)
         .env("XRAY_PATH", &xray_path)
+        .env("ROUTING_CONFIG", "/tmp/max-strike-routing.json")
         .arg("connect")
         .arg("/tmp/max-strike-config.json")
         .spawn().map_err(|e| {
@@ -295,8 +312,7 @@ async fn connect_to_server(app: tauri::AppHandle, server: Server) -> Result<Stri
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     
     add_log("INFO", "Connection established successfully");
-    Ok("Connected successfully
-SOCKS5: 127.0.0.1:10808".to_string())
+    Ok("Connected successfully\nSOCKS5: 127.0.0.1:10808".to_string())
 }
 
 fn find_core_path(resource_dir: Option<&std::path::PathBuf>) -> String {
@@ -433,6 +449,41 @@ fn clear_logs() {
     add_log("INFO", "Logs cleared");
 }
 
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RoutingConfig {
+    pub block_ads: bool,
+    pub bypass_lan: bool,
+    pub split_routing: bool,
+    pub region: String,
+}
+
+lazy_static::lazy_static! {
+    static ref ROUTING_CONFIG: Mutex<RoutingConfig> = Mutex::new(RoutingConfig {
+        block_ads: false,
+        bypass_lan: true,
+        split_routing: true,
+        region: "russia".to_string(),
+    });
+}
+
+#[tauri::command]
+async fn get_routing_config() -> Result<RoutingConfig, String> {
+    let config = ROUTING_CONFIG.lock().unwrap().clone();
+    Ok(config)
+}
+
+#[tauri::command]
+async fn save_routing_config(config: RoutingConfig) -> Result<String, String> {
+    add_log("INFO", &format!("Saving routing config: block_ads={}, bypass_lan={}, split_routing={}, region={}", 
+        config.block_ads, config.bypass_lan, config.split_routing, config.region));
+    
+    let mut current = ROUTING_CONFIG.lock().unwrap();
+    *current = config;
+    
+    Ok("Routing config saved".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     add_log("INFO", "MAX STRIKE application started");
@@ -452,7 +503,9 @@ pub fn run() {
             get_connection_stats,
             get_home_dir,
             get_logs,
-            clear_logs
+            clear_logs,
+            get_routing_config,
+            save_routing_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
