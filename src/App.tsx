@@ -105,10 +105,6 @@ function App() {
   }
 
   // QR импорт
-  const handleQrClick = () => {
-    setImportMode('qr')
-    setImportError(null)
-  }
 
   const handleQrFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -166,10 +162,6 @@ function App() {
   }
 
   // Файл импорт
-  const handleFileClick = async () => {
-    setImportMode('file')
-    setImportError(null)
-  }
 
   const handleFileSelect = async () => {
     setImportLoading(true)

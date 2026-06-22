@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e
+
+# Делаем бинарники исполняемыми
+chmod +x "/usr/lib/MAX STRIKE/_up_/core/max-strike-core"
+chmod +x "/usr/lib/MAX STRIKE/_up_/core/xray"
+
+exit 0
