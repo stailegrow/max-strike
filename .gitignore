@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+src-tauri/target/
+
+# Build artifacts (но не бинарники!)
+dist/
+src-tauri/target/release/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Tauri
+src-tauri/gen/schemas/
+
+# Temp
+/tmp/
+*.tmp
+*.zip
+
+# Environment
+.env
+.env.local
+
+# Go build artifacts (кроме наших бинарников)
+core/*.zip
+core/go.sum.bak
