@@ -10,7 +10,7 @@ import type { Server } from './types'
 import { translations } from './i18n'
 import './App.css'
 
-const APP_VERSION = '1.0.3'
+const APP_VERSION = '1.0.4'
 
 interface LogEntry {
   timestamp: string
