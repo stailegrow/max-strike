@@ -225,6 +225,7 @@ func createDNSConfig(routing RoutingConfig) map[string]interface{} {
 func createRoutingRules(routing RoutingConfig) map[string]interface{} {
 	rules := []map[string]interface{}{}
 
+	// 1. Блокировка рекламы
 	if routing.BlockAds {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
@@ -233,73 +234,35 @@ func createRoutingRules(routing RoutingConfig) map[string]interface{} {
 		})
 	}
 
+	// 2. Обход LAN
 	if routing.BypassLan {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
 			"outboundTag": "direct",
 			"ip": []string{
-				"10.0.0.0/8",
-				"172.16.0.0/12",
-				"192.168.0.0/16",
-				"127.0.0.0/8",
-				"169.254.0.0/16",
+				"geoip:private",
 			},
 		})
 	}
 
+	// 3. Разделение трафика - РФ напрямую
 	if routing.SplitRouting && routing.Region == "russia" {
-		// Используем geosite:category-ru для доменов
+		// Российские домены напрямую (используем geosite от Loyalsoldier)
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
 			"outboundTag": "direct",
 			"domain":      []string{"geosite:category-ru"},
 		})
 		
-		// Основные российские IP диапазоны (вместо geoip:ru)
+		// Российские IP напрямую (используем geoip от v2fly)
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
 			"outboundTag": "direct",
-			"ip": []string{
-				"5.0.0.0/8",
-				"31.0.0.0/8",
-				"37.0.0.0/8",
-				"46.0.0.0/8",
-				"62.0.0.0/8",
-				"77.0.0.0/8",
-				"78.0.0.0/8",
-				"79.0.0.0/8",
-				"80.0.0.0/8",
-				"81.0.0.0/8",
-				"82.0.0.0/8",
-				"83.0.0.0/8",
-				"84.0.0.0/8",
-				"85.0.0.0/8",
-				"86.0.0.0/8",
-				"87.0.0.0/8",
-				"88.0.0.0/8",
-				"89.0.0.0/8",
-				"90.0.0.0/8",
-				"91.0.0.0/8",
-				"92.0.0.0/8",
-				"93.0.0.0/8",
-				"94.0.0.0/8",
-				"95.0.0.0/8",
-				"109.0.0.0/8",
-				"128.0.0.0/8",
-				"176.0.0.0/8",
-				"178.0.0.0/8",
-				"185.0.0.0/8",
-				"188.0.0.0/8",
-				"193.0.0.0/8",
-				"194.0.0.0/8",
-				"195.0.0.0/8",
-				"212.0.0.0/8",
-				"213.0.0.0/8",
-				"217.0.0.0/8",
-			},
+			"ip":          []string{"geoip:ru"},
 		})
 	}
 
+	// 4. Всё остальное через прокси
 	rules = append(rules, map[string]interface{}{
 		"type":        "field",
 		"outboundTag": "proxy",
