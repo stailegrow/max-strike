@@ -25,12 +25,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "deb",
-      "nsis"
-    ],
+    "targets": ["deb", "nsis"],
     "icon": [
-      "icons/icon.png",
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
@@ -41,7 +37,9 @@
       "../core/max-strike-core",
       "../core/xray",
       "../core/max-strike-core.exe",
-      "../core/xray.exe"
+      "../core/xray.exe",
+      "../core/geoip.dat",
+      "../core/geosite.dat"
     ],
     "linux": {
       "deb": {
@@ -50,6 +48,11 @@
           "libgtk-3-0",
           "libssl3"
         ]
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
       }
     }
   }
