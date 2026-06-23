@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::process::{Command, Child};
 use std::sync::Mutex;
 use tauri::Manager;
+use std::os::windows::process::CommandExt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Server {
@@ -38,6 +39,14 @@ pub struct LogEntry {
     pub message: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RoutingConfig {
+    pub block_ads: bool,
+    pub bypass_lan: bool,
+    pub split_routing: bool,
+    pub region: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConnectionStats {
     pub uplink: u64,
@@ -47,6 +56,12 @@ pub struct ConnectionStats {
 lazy_static::lazy_static! {
     static ref CORE_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
     static ref LOG_BUFFER: Mutex<Vec<LogEntry>> = Mutex::new(Vec::new());
+    static ref ROUTING_CONFIG: Mutex<RoutingConfig> = Mutex::new(RoutingConfig {
+        block_ads: false,
+        bypass_lan: true,
+        split_routing: true,
+        region: "russia".to_string(),
+    });
 }
 
 fn add_log(level: &str, message: &str) {
@@ -57,10 +72,42 @@ fn add_log(level: &str, message: &str) {
         level: level.to_string(),
         message: message.to_string(),
     });
-    // Оставляем только последние 1000 записей
     if logs.len() > 1000 {
         logs.remove(0);
     }
+}
+
+fn get_config_path() -> std::path::PathBuf {
+    let app_data = std::env::var("APPDATA").unwrap_or_else(|_| "C:\\ProgramData".to_string());
+    let config_dir = std::path::Path::new(&app_data).join("MAX STRIKE");
+    std::fs::create_dir_all(&config_dir).ok();
+    config_dir.join("routing.json")
+}
+
+fn load_routing_config() -> RoutingConfig {
+    let path = get_config_path();
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(config) = serde_json::from_str(&data) {
+                return config;
+            }
+        }
+    }
+    RoutingConfig {
+        block_ads: false,
+        bypass_lan: true,
+        split_routing: true,
+        region: "russia".to_string(),
+    }
+}
+
+fn save_routing_config_to_file(config: &RoutingConfig) -> Result<(), String> {
+    let path = get_config_path();
+    let json = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize: {}", e))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("Failed to write: {}", e))?;
+    Ok(())
 }
 
 fn is_base64(s: &str) -> bool {
@@ -236,68 +283,68 @@ async fn parse_subscription_content_string(content: String) -> Result<Vec<Server
     Ok(servers)
 }
 
+// Убиваем ВСЕ процессы xray.exe
+fn kill_all_xray() {
+    let _ = Command::new("taskkill")
+        .args(&["/F", "/IM", "xray.exe"])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output();
+    add_log("DEBUG", "Killed all xray.exe processes");
+}
+
 #[tauri::command]
 async fn connect_to_server(app: tauri::AppHandle, server: Server) -> Result<String, String> {
     add_log("INFO", &format!("Connecting to server: {} ({}:{})", server.name, server.address, server.port));
+    
+    // Сначала убиваем все старые процессы xray
+    kill_all_xray();
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     
     let config_json = serde_json::to_string(&server).map_err(|e| {
         add_log("ERROR", &format!("Failed to serialize config: {}", e));
         format!("Failed to serialize: {}", e)
     })?;
     
-    std::fs::write("/tmp/max-strike-config.json", &config_json).map_err(|e| {
+    let config_path = std::env::temp_dir().join("max-strike-config.json");
+    std::fs::write(&config_path, &config_json).map_err(|e| {
         add_log("ERROR", &format!("Failed to write config: {}", e));
         format!("Failed to write config: {}", e)
     })?;
     
-    add_log("DEBUG", "Config written to /tmp/max-strike-config.json");
+    add_log("DEBUG", &format!("Config written to: {:?}", config_path));
     
-    // Читаем routing config
     let routing = ROUTING_CONFIG.lock().unwrap().clone();
     add_log("INFO", &format!("Routing config: block_ads={}, bypass_lan={}, split_routing={}, region={}", 
         routing.block_ads, routing.bypass_lan, routing.split_routing, routing.region));
     
-    // Сохраняем routing config в файл для Go core
     let routing_json = serde_json::to_string(&routing).map_err(|e| {
         add_log("ERROR", &format!("Failed to serialize routing config: {}", e));
         format!("Failed to serialize routing: {}", e)
     })?;
-    std::fs::write("/tmp/max-strike-routing.json", &routing_json).map_err(|e| {
+    let routing_path = std::env::temp_dir().join("max-strike-routing.json");
+    std::fs::write(&routing_path, &routing_json).map_err(|e| {
         add_log("ERROR", &format!("Failed to write routing config: {}", e));
         format!("Failed to write routing: {}", e)
     })?;
-    add_log("DEBUG", "Routing config written to /tmp/max-strike-routing.json");
+    add_log("DEBUG", &format!("Routing config written to: {:?}", routing_path));
     
-    // Умный поиск core бинарника
     let resource_dir = app.path().resource_dir().ok();
-    
     let core_path = find_core_path(resource_dir.as_ref());
     add_log("DEBUG", &format!("Using core: {}", core_path));
     
-    let xray_path = if let Some(ref dir) = resource_dir {
-        let p = dir.join("xray");
-        if p.exists() {
-            add_log("DEBUG", &format!("Using xray from resource dir: {:?}", p));
-            p.to_string_lossy().to_string()
-        } else {
-            let path = find_xray();
-            add_log("DEBUG", &format!("Using xray from system: {}", path));
-            path
-        }
-    } else {
-        let path = find_xray();
-        add_log("DEBUG", &format!("Using xray from system: {}", path));
-        path
-    };
+    let xray_path = find_xray(resource_dir.as_ref());
+    add_log("DEBUG", &format!("Using xray: {}", xray_path));
     
     add_log("INFO", &format!("Starting core: {}", core_path));
     add_log("INFO", &format!("Using xray: {}", xray_path));
     
+    // Запускаем с CREATE_NO_WINDOW чтобы не было консольного окна
     let child = Command::new(&core_path)
         .env("XRAY_PATH", &xray_path)
-        .env("ROUTING_CONFIG", "/tmp/max-strike-routing.json")
+        .env("ROUTING_CONFIG", &routing_path)
         .arg("connect")
-        .arg("/tmp/max-strike-config.json")
+        .arg(&config_path)
+        .creation_flags(0x08000000)
         .spawn().map_err(|e| {
             let err = format!("Failed to start core: {} (core: {}, xray: {})", e, core_path, xray_path);
             add_log("ERROR", &err);
@@ -308,123 +355,207 @@ async fn connect_to_server(app: tauri::AppHandle, server: Server) -> Result<Stri
     
     { let mut g = CORE_PROCESS.lock().unwrap(); *g = Some(child); }
     
-    add_log("INFO", "Waiting 2 seconds for connection to establish...");
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    add_log("INFO", "Waiting 3 seconds for connection to establish...");
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    
+    // Проверяем что xray слушает порт
+    let check = Command::new("netstat")
+        .args(&["-ano"])
+        .creation_flags(0x08000000)
+        .output();
+    
+    match check {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains(":10808") || stdout.contains(":10809") {
+                add_log("INFO", "Xray is listening on ports");
+            } else {
+                add_log("WARN", "Xray may not be listening yet");
+            }
+        }
+        Err(_) => {}
+    }
     
     add_log("INFO", "Connection established successfully");
-    Ok("Connected successfully\nSOCKS5: 127.0.0.1:10808".to_string())
+    Ok("Connected successfully\nHTTP proxy: 127.0.0.1:10809".to_string())
 }
 
 fn find_core_path(resource_dir: Option<&std::path::PathBuf>) -> String {
-    // 1. Production: resource dir
+    add_log("DEBUG", &format!("find_core_path called with resource_dir: {:?}", resource_dir));
+    
     if let Some(dir) = resource_dir {
-        let p = dir.join("max-strike-core");
+        let p = dir.join("max-strike-core.exe");
+        add_log("DEBUG", &format!("Checking resource dir path: {:?}", p));
         if p.exists() {
+            add_log("INFO", &format!("Found core in resource dir: {:?}", p));
             return p.to_string_lossy().to_string();
         }
     }
     
-    // 2. Относительно текущего бинарника Rust
     if let Ok(exe) = std::env::current_exe() {
         let exe_dir = exe.parent().unwrap();
+        add_log("DEBUG", &format!("Current exe dir: {:?}", exe_dir));
         
-        // Пробуем разные относительные пути (для разных уровней вложенности в dev)
         let candidates = vec![
-            exe_dir.join("core").join("max-strike-core"),
-            exe_dir.join("..").join("core").join("max-strike-core"),
-            exe_dir.join("..").join("..").join("core").join("max-strike-core"),
-            exe_dir.join("..").join("..").join("..").join("core").join("max-strike-core"),
+            exe_dir.join("core").join("max-strike-core.exe"),
+            exe_dir.join("..").join("core").join("max-strike-core.exe"),
+            exe_dir.join("..").join("..").join("core").join("max-strike-core.exe"),
+            exe_dir.join("..").join("..").join("..").join("core").join("max-strike-core.exe"),
+            exe_dir.join("..").join("..").join("..").join("..").join("core").join("max-strike-core.exe"),
         ];
         
         for candidate in candidates {
+            add_log("DEBUG", &format!("Checking candidate: {:?}", candidate));
             if candidate.exists() {
-                if let Ok(canon) = candidate.canonicalize() {
-                    return canon.to_string_lossy().to_string();
-                }
+                add_log("INFO", &format!("Found core at: {:?}", candidate));
                 return candidate.to_string_lossy().to_string();
             }
         }
     }
     
-    // 3. Через HOME переменную (резерв)
-    if let Ok(home) = std::env::var("HOME") {
-        let p = std::path::Path::new(&home).join("projects").join("max-strike").join("core").join("max-strike-core");
-        if p.exists() {
-            return p.to_string_lossy().to_string();
-        }
-    }
-    
-    // 4. Текущая директория
     if let Ok(cwd) = std::env::current_dir() {
-        let p = cwd.join("core").join("max-strike-core");
+        let p = cwd.join("core").join("max-strike-core.exe");
+        add_log("DEBUG", &format!("Checking CWD path: {:?}", p));
         if p.exists() {
+            add_log("INFO", &format!("Found core in CWD: {:?}", p));
             return p.to_string_lossy().to_string();
         }
     }
     
-    "./core/max-strike-core".to_string()
+    let fallback = "core\\max-strike-core.exe".to_string();
+    add_log("WARN", &format!("Core not found, using fallback: {}", fallback));
+    fallback
 }
 
-
-fn find_xray() -> String {
-    if let Ok(p) = std::process::Command::new("which").arg("xray").output() {
-        if p.status.success() { return String::from_utf8_lossy(&p.stdout).trim().to_string(); }
+fn find_xray(resource_dir: Option<&std::path::PathBuf>) -> String {
+    add_log("DEBUG", &format!("find_xray called with resource_dir: {:?}", resource_dir));
+    
+    if let Some(dir) = resource_dir {
+        let p = dir.join("xray.exe");
+        add_log("DEBUG", &format!("Checking resource dir xray: {:?}", p));
+        if p.exists() {
+            add_log("INFO", &format!("Found xray in resource dir: {:?}", p));
+            return p.to_string_lossy().to_string();
+        }
     }
-    for p in ["/usr/local/bin/xray", "/usr/bin/xray", "/opt/xray/xray"] {
-        if std::path::Path::new(p).exists() { return p.to_string(); }
+    
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_dir = exe.parent().unwrap();
+        let candidates = vec![
+            exe_dir.join("xray.exe"),
+            exe_dir.join("core").join("xray.exe"),
+            exe_dir.join("..").join("core").join("xray.exe"),
+            exe_dir.join("..").join("..").join("core").join("xray.exe"),
+            exe_dir.join("..").join("..").join("..").join("core").join("xray.exe"),
+        ];
+        
+        for candidate in candidates {
+            add_log("DEBUG", &format!("Checking xray candidate: {:?}", candidate));
+            if candidate.exists() {
+                add_log("INFO", &format!("Found xray at: {:?}", candidate));
+                return candidate.to_string_lossy().to_string();
+            }
+        }
     }
-    "xray".to_string()
+    
+    if let Ok(cwd) = std::env::current_dir() {
+        let p = cwd.join("core").join("xray.exe");
+        add_log("DEBUG", &format!("Checking CWD xray: {:?}", p));
+        if p.exists() {
+            add_log("INFO", &format!("Found xray in CWD: {:?}", p));
+            return p.to_string_lossy().to_string();
+        }
+    }
+    
+    let fallback = "xray.exe".to_string();
+    add_log("WARN", &format!("Xray not found, using fallback: {}", fallback));
+    fallback
 }
 
 #[tauri::command]
 async fn disconnect_from_server() -> Result<String, String> {
     add_log("INFO", "Disconnecting from server");
+    
+    // Убиваем child процесс
     let mut g = CORE_PROCESS.lock().unwrap();
     if let Some(mut child) = g.take() {
-        child.kill().map_err(|e| {
-            add_log("ERROR", &format!("Failed to kill process: {}", e));
-            format!("Failed to kill: {}", e)
-        })?;
-        child.wait().map_err(|e| {
-            add_log("ERROR", &format!("Failed to wait: {}", e));
-            format!("Failed to wait: {}", e)
-        })?;
-        add_log("INFO", "Process terminated");
+        let _ = child.kill();
+        let _ = child.wait();
+        add_log("INFO", "Child process terminated");
     }
+    drop(g);
+    
+    // Убиваем ВСЕ процессы xray.exe
+    kill_all_xray();
+    
     add_log("INFO", "Disconnected successfully");
     Ok("Disconnected".to_string())
 }
 
+// Использует PowerShell для записи в реестр (надёжнее чем reg.exe)
 #[tauri::command]
 async fn set_system_proxy(enabled: bool) -> Result<String, String> {
     add_log("INFO", &format!("Setting system proxy: {}", if enabled { "enabled" } else { "disabled" }));
-    if enabled {
-        for args in [
-            ["set", "org.gnome.system.proxy", "mode", "manual"],
-            ["set", "org.gnome.system.proxy.http", "host", ""],
-            ["set", "org.gnome.system.proxy.http", "port", "0"],
-            ["set", "org.gnome.system.proxy.https", "host", ""],
-            ["set", "org.gnome.system.proxy.https", "port", "0"],
-            ["set", "org.gnome.system.proxy.socks", "host", "127.0.0.1"],
-            ["set", "org.gnome.system.proxy.socks", "port", "10808"],
-            ["set", "org.gnome.system.proxy", "ignore-hosts", "['localhost', '127.0.0.0/8', '::1', '192.168.0.0/16', '10.0.0.0/8', '172.16.0.0/12']"],
-        ] {
-            Command::new("gsettings").args(&args).output().map_err(|e| {
-                add_log("ERROR", &format!("Failed to set proxy: {}", e));
-                format!("Failed: {}", e)
-            })?;
-        }
-        add_log("INFO", "System proxy enabled (SOCKS5 on 127.0.0.1:10808)");
-        Ok("System proxy enabled".to_string())
+    
+    let ps_script = if enabled {
+        r#"
+$regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+Set-ItemProperty -Path $regPath -Name ProxyEnable -Value 1 -Type DWord
+Set-ItemProperty -Path $regPath -Name ProxyServer -Value '127.0.0.1:10809'
+Set-ItemProperty -Path $regPath -Name ProxyOverride -Value 'localhost;127.*;10.*;172.16.*;192.168.*;<local>'
+# Notify system about proxy change
+$signature = @'
+[DllImport("wininet.dll", SetLastError=true)]
+public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int lpdwBufferLength);
+'@
+$WinInet = Add-Type -MemberDefinition $signature -Name WinInet -Namespace Proxy -PassThru
+$INTERNET_OPTION_SETTINGS_CHANGED = 39
+$INTERNET_OPTION_PROXY_SETTINGS_CHANGED = 75
+$WinInet::InternetSetOption([IntPtr]::Zero, $INTERNET_OPTION_SETTINGS_CHANGED, [IntPtr]::Zero, 0)
+$WinInet::InternetSetOption([IntPtr]::Zero, $INTERNET_OPTION_PROXY_SETTINGS_CHANGED, [IntPtr]::Zero, 0)
+Write-Output "Proxy enabled"
+"#
     } else {
-        Command::new("gsettings").args(&["set", "org.gnome.system.proxy", "mode", "none"])
-            .output().map_err(|e| {
-                add_log("ERROR", &format!("Failed to disable proxy: {}", e));
-                format!("Failed: {}", e)
-            })?;
-        add_log("INFO", "System proxy disabled");
-        Ok("System proxy disabled".to_string())
+        r#"
+$regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+Set-ItemProperty -Path $regPath -Name ProxyEnable -Value 0 -Type DWord
+$signature = @'
+[DllImport("wininet.dll", SetLastError=true)]
+public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int lpdwBufferLength);
+'@
+$WinInet = Add-Type -MemberDefinition $signature -Name WinInet -Namespace Proxy -PassThru
+$INTERNET_OPTION_SETTINGS_CHANGED = 39
+$INTERNET_OPTION_PROXY_SETTINGS_CHANGED = 75
+$WinInet::InternetSetOption([IntPtr]::Zero, $INTERNET_OPTION_SETTINGS_CHANGED, [IntPtr]::Zero, 0)
+$WinInet::InternetSetOption([IntPtr]::Zero, $INTERNET_OPTION_PROXY_SETTINGS_CHANGED, [IntPtr]::Zero, 0)
+Write-Output "Proxy disabled"
+"#
+    };
+    
+    let result = Command::new("powershell")
+        .args(&["-ExecutionPolicy", "Bypass", "-Command", ps_script])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| {
+            add_log("ERROR", &format!("Failed to run PowerShell: {}", e));
+            format!("Failed: {}", e)
+        })?;
+    
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    
+    add_log("DEBUG", &format!("PowerShell stdout: {}", stdout));
+    if !stderr.is_empty() {
+        add_log("WARN", &format!("PowerShell stderr: {}", stderr));
     }
+    
+    if enabled {
+        add_log("INFO", "Windows system proxy enabled (HTTP on 127.0.0.1:10809)");
+    } else {
+        add_log("INFO", "Windows system proxy disabled");
+    }
+    
+    Ok("System proxy updated".to_string())
 }
 
 #[tauri::command]
@@ -434,8 +565,19 @@ async fn get_connection_stats() -> Result<ConnectionStats, String> {
 
 #[tauri::command]
 fn get_home_dir() -> Result<String, String> {
-    dirs::home_dir().map(|p| p.to_string_lossy().to_string())
-        .ok_or_else(|| "Failed to get home directory".to_string())
+    std::env::var("USERPROFILE")
+        .map_err(|_| "Failed to get home directory".to_string())
+}
+
+#[tauri::command]
+fn get_install_dir() -> Result<String, String> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return Ok(dir.to_string_lossy().to_string());
+        }
+    }
+    std::env::current_dir().map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| format!("Failed to get current dir: {}", e))
 }
 
 #[tauri::command]
@@ -449,27 +591,11 @@ fn clear_logs() {
     add_log("INFO", "Logs cleared");
 }
 
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RoutingConfig {
-    pub block_ads: bool,
-    pub bypass_lan: bool,
-    pub split_routing: bool,
-    pub region: String,
-}
-
-lazy_static::lazy_static! {
-    static ref ROUTING_CONFIG: Mutex<RoutingConfig> = Mutex::new(RoutingConfig {
-        block_ads: false,
-        bypass_lan: true,
-        split_routing: true,
-        region: "russia".to_string(),
-    });
-}
-
 #[tauri::command]
 async fn get_routing_config() -> Result<RoutingConfig, String> {
-    let config = ROUTING_CONFIG.lock().unwrap().clone();
+    let config = load_routing_config();
+    let mut current = ROUTING_CONFIG.lock().unwrap();
+    *current = config.clone();
     Ok(config)
 }
 
@@ -479,14 +605,30 @@ async fn save_routing_config(config: RoutingConfig) -> Result<String, String> {
         config.block_ads, config.bypass_lan, config.split_routing, config.region));
     
     let mut current = ROUTING_CONFIG.lock().unwrap();
-    *current = config;
+    *current = config.clone();
+    drop(current);
     
+    if let Err(e) = save_routing_config_to_file(&config) {
+        add_log("ERROR", &format!("Failed to save routing config to file: {}", e));
+        return Err(e);
+    }
+    
+    add_log("INFO", "Routing config saved to file");
     Ok("Routing config saved".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    add_log("INFO", "MAX STRIKE application started");
+    add_log("INFO", "MAX STRIKE application started (Windows)");
+    
+    {
+        let config = load_routing_config();
+        let mut current = ROUTING_CONFIG.lock().unwrap();
+        *current = config;
+    }
+    
+    add_log("INFO", "Routing config loaded from file");
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -502,6 +644,7 @@ pub fn run() {
             set_system_proxy,
             get_connection_stats,
             get_home_dir,
+            get_install_dir,
             get_logs,
             clear_logs,
             get_routing_config,
