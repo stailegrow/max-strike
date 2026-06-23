@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 )
 
@@ -225,7 +226,6 @@ func createDNSConfig(routing RoutingConfig) map[string]interface{} {
 func createRoutingRules(routing RoutingConfig) map[string]interface{} {
 	rules := []map[string]interface{}{}
 
-	// 1. Блокировка рекламы
 	if routing.BlockAds {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
@@ -234,7 +234,6 @@ func createRoutingRules(routing RoutingConfig) map[string]interface{} {
 		})
 	}
 
-	// 2. Обход LAN
 	if routing.BypassLan {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
@@ -245,16 +244,13 @@ func createRoutingRules(routing RoutingConfig) map[string]interface{} {
 		})
 	}
 
-	// 3. Разделение трафика - РФ напрямую
 	if routing.SplitRouting && routing.Region == "russia" {
-		// Российские домены напрямую (используем geosite от Loyalsoldier)
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
 			"outboundTag": "direct",
 			"domain":      []string{"geosite:category-ru"},
 		})
 		
-		// Российские IP напрямую (используем geoip от v2fly)
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
 			"outboundTag": "direct",
@@ -262,7 +258,6 @@ func createRoutingRules(routing RoutingConfig) map[string]interface{} {
 		})
 	}
 
-	// 4. Всё остальное через прокси
 	rules = append(rules, map[string]interface{}{
 		"type":        "field",
 		"outboundTag": "proxy",
@@ -327,6 +322,12 @@ func createStreamSettings(config ServerConfig) map[string]interface{} {
 }
 
 func findXray() string {
+	// Определяем имя бинарника в зависимости от ОС
+	xrayName := "xray"
+	if runtime.GOOS == "windows" {
+		xrayName = "xray.exe"
+	}
+	
 	if envPath := os.Getenv("XRAY_PATH"); envPath != "" {
 		if _, err := os.Stat(envPath); err == nil {
 			return envPath
@@ -335,21 +336,31 @@ func findXray() string {
 
 	if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)
-		localXray := filepath.Join(exeDir, "xray")
+		localXray := filepath.Join(exeDir, xrayName)
 		if _, err := os.Stat(localXray); err == nil {
 			return localXray
 		}
 	}
 
-	if path, err := exec.LookPath("xray"); err == nil {
+	if path, err := exec.LookPath(xrayName); err == nil {
 		return path
 	}
 
-	paths := []string{
-		"/usr/local/bin/xray",
-		"/usr/bin/xray",
-		"/opt/xray/xray",
-		"./xray",
+	// Пути для поиска
+	var paths []string
+	if runtime.GOOS == "windows" {
+		paths = []string{
+			".\\xray.exe",
+			"C:\\Program Files\\Xray\\xray.exe",
+			"C:\\Xray\\xray.exe",
+		}
+	} else {
+		paths = []string{
+			"/usr/local/bin/xray",
+			"/usr/bin/xray",
+			"/opt/xray/xray",
+			"./xray",
+		}
 	}
 
 	for _, p := range paths {
@@ -358,7 +369,7 @@ func findXray() string {
 		}
 	}
 
-	return ""
+	return xrayName
 }
 
 func disconnect() {
